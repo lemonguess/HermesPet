@@ -4,12 +4,16 @@ import type { MessagePart } from '@shared/types'
 import { createMainWindow, createChatWindow, createContextMenuWindow } from './window'
 import { ConversationStore } from './store'
 import { HermesBridgeService } from './hermes/bridge-service'
+import { HermesCliService } from './hermes/hermes-cli-service'
+import { MediaService } from './media/media-service'
 
 let mainWindow: BrowserWindow | null = null
 let chatWindow: BrowserWindow | null = null
 let contextMenuWindow: BrowserWindow | null = null
 let store: ConversationStore | null = null
 let bridgeService: HermesBridgeService | null = null
+let cliService: HermesCliService | null = null
+let mediaService: MediaService | null = null
 
 function openChat(tab?: string): void {
   if (chatWindow && !chatWindow.isDestroyed()) {
@@ -95,6 +99,10 @@ app.whenReady().then(() => {
   store = new ConversationStore(app.getPath('userData'))
   bridgeService = new HermesBridgeService()
   bridgeService.register()
+  cliService = new HermesCliService()
+  cliService.register()
+  mediaService = new MediaService()
+  mediaService.register()
   registerIpc()
   mainWindow = createMainWindow()
 

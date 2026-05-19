@@ -52,6 +52,15 @@ export interface MediaPart {
   src: string
 }
 
+export interface MediaImportRequest {
+  conversationId: string
+  sourcePath: string
+}
+
+export interface MediaImportResult {
+  part: MediaPart
+}
+
 export interface ToolPart {
   kind: 'tool'
   name: string
@@ -118,3 +127,15 @@ export type AgentRunEvent =
       runId?: string
       error: string
     }
+
+export interface HermesCliResult {
+  ok: boolean
+  stdout: string
+  stderr: string
+}
+
+export interface HermesGatewayStatus {
+  profile: string
+  running: boolean
+  raw: HermesCliResult
+}

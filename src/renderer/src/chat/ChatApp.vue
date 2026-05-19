@@ -3,7 +3,7 @@ import { ref, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import MarkdownIt from 'markdown-it'
 import { sendMessage, checkHealth, setHermesConfig, getHermesConfig, type ChatMessage } from '../api/hermes'
 import InteractionPanel from '../components/InteractionPanel.vue'
-import type { MessagePart } from '@shared/types'
+import type { HermesGatewayStatus, MediaPart, MessagePart } from '@shared/types'
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
 
@@ -27,6 +27,7 @@ const isStreaming = ref(false)
 const connectionStatus = ref<'checking' | 'connected' | 'disconnected'>('checking')
 const conversations = ref<Conversation[]>([])
 const historyOpen = ref(false)
+const conversationQuery = ref('')
 const copyFeedbackId = ref<number | null>(null)
 const oldestLoadedAt = ref<number | null>(null) // Timestamp of oldest loaded message for pagination
 let nextId = 1
@@ -34,6 +35,8 @@ const currentConversationId = ref('')
 let currentAbort: AbortController | null = null
 let unsubSetTab: (() => void) | undefined
 let isLoadingOlder = false
+const pendingMedia = ref<MediaPart[]>([])
+const fileInputEl = ref<HTMLInputElement | null>(null)
 
 // --- Conversations ---
 
@@ -65,7 +68,11 @@ function dayGroup(ts: number): string {
 
 const groupedConversations = computed(() => {
   const groups: Record<string, Conversation[]> = {}
-  for (const c of conversations.value) {
+  const query = conversationQuery.value.trim().toLowerCase()
+  const list = query
+    ? conversations.value.filter(c => c.title.toLowerCase().includes(query))
+    : conversations.value
+  for (const c of list) {
     const g = dayGroup(c.createdAt)
     ;(groups[g] ??= []).push(c)
   }
@@ -77,16 +84,23 @@ const currentConversationTitle = computed(() => {
   return conversations.value.find(c => c.id === currentConversationId.value)?.title ?? '新对话'
 })
 
-function toggleHistory(): void {
-  if (!historyOpen.value) loadConversations()
-  historyOpen.value = !historyOpen.value
-}
-
 function newConversation(): void {
   currentConversationId.value = ''
   messages.value = []
   nextId = 1
   historyOpen.value = false
+  pendingMedia.value = []
+}
+
+async function ensureConversationId(): Promise<string | null> {
+  if (currentConversationId.value) return currentConversationId.value
+  const hint = input.value.trim()
+  const title = hint ? (hint.length > 30 ? hint.slice(0, 30) + '…' : hint) : '新对话'
+  const conv = await window.hermes?.conversations?.create(title)
+  if (!conv) return null
+  currentConversationId.value = conv.id
+  await loadConversations()
+  return conv.id
 }
 
 async function openConversation(id: string): Promise<void> {
@@ -95,6 +109,7 @@ async function openConversation(id: string): Promise<void> {
   nextId = 1
   historyOpen.value = false
   oldestLoadedAt.value = null
+  pendingMedia.value = []
 
   // Load stored messages for this conversation
   const stored = await window.hermes?.conversations?.getMessages(id) ?? []
@@ -180,6 +195,7 @@ function switchTab(tab: Tab): void {
   activeTab.value = tab
   historyOpen.value = false
   if (tab === 'chat') scrollToBottom()
+  if (tab === 'settings') initHermesCliPanel()
 }
 
 // Close history dropdown when clicking outside
@@ -187,27 +203,57 @@ function onMainClick(): void {
   if (historyOpen.value) historyOpen.value = false
 }
 
+function openFilePicker(): void {
+  fileInputEl.value?.click()
+}
+
+async function onFilesPicked(e: Event): Promise<void> {
+  const el = e.target as HTMLInputElement | null
+  const files = el?.files ? Array.from(el.files) : []
+  if (!files.length) return
+  const convId = await ensureConversationId()
+  if (!convId) return
+
+  for (const f of files) {
+    const sourcePath = window.hermes?.media?.filePath(f)
+    if (!sourcePath) continue
+    const res = await window.hermes?.media?.import({ conversationId: convId, sourcePath })
+    const part = res?.part
+    if (part?.kind === 'media') pendingMedia.value = [...pendingMedia.value, part]
+  }
+
+  if (el) el.value = ''
+}
+
+function renderMessageForContext(msg: Message): string {
+  const text = msg.text || ''
+  const media = (msg.parts ?? []).filter(p => p.kind === 'media') as MediaPart[]
+  if (!media.length) return text
+  const lines = media.map(m => `(Attachment: ${m.type} ${m.src})`).join('\n')
+  return text ? `${text}\n${lines}` : lines
+}
+
+function mediaParts(parts?: MessagePart[]): MediaPart[] {
+  return (parts ?? []).filter(p => p.kind === 'media') as MediaPart[]
+}
+
 async function send(): Promise<void> {
   const text = input.value.trim()
-  if (!text || isStreaming.value) return
+  if ((!text && pendingMedia.value.length === 0) || isStreaming.value) return
 
   // 首次消息自动创建会话
-  if (!currentConversationId.value) {
-    const title = text.length > 30 ? text.slice(0, 30) + '…' : text
-    const conv = await window.hermes?.conversations?.create(title)
-    if (conv) {
-      currentConversationId.value = conv.id
-      await loadConversations()
-    }
-  }
+  const ensured = await ensureConversationId()
+  if (!ensured) return
 
   const convId = currentConversationId.value
 
   // Store user message
-  const stored = await window.hermes?.conversations?.addMessage(convId, 'user', text)
+  const userParts: MessagePart[] = pendingMedia.value.length ? [...pendingMedia.value] : []
+  const stored = await window.hermes?.conversations?.addMessage(convId, 'user', text, userParts.length ? userParts : undefined)
 
-  messages.value.push({ id: nextId++, role: 'user', text, storedId: stored?.id })
+  messages.value.push({ id: nextId++, role: 'user', text, storedId: stored?.id, parts: userParts })
   input.value = ''
+  pendingMedia.value = []
 
   const hermesMsgId = nextId++
   const hermesMsg: Message = { id: hermesMsgId, role: 'hermes', text: '', streaming: true }
@@ -218,8 +264,8 @@ async function send(): Promise<void> {
 
   // Build messages array from history for bridge context
   const apiMessages: ChatMessage[] = messages.value
-    .filter(m => m.text) // skip empty streaming placeholders
-    .map(m => ({ role: m.role === 'hermes' ? 'assistant' : 'user', content: m.text }))
+    .filter(m => m.text || (m.parts?.length ?? 0) > 0)
+    .map(m => ({ role: m.role === 'hermes' ? 'assistant' : 'user', content: renderMessageForContext(m) }))
 
   currentAbort = sendMessage({
     sessionId: convId,
@@ -309,6 +355,65 @@ function resetSettings(): void {
   apiKey.value = 'local-ipc'
   applySettings()
 }
+
+const hermesCliAvailable = ref<'checking' | 'available' | 'missing'>('checking')
+const hermesProfiles = ref<string[]>([])
+const hermesProfile = ref('default')
+const gatewayStatus = ref<HermesGatewayStatus | null>(null)
+const gatewayBusy = ref(false)
+const gatewayMessage = ref('')
+
+async function refreshHermesCli(): Promise<void> {
+  hermesCliAvailable.value = 'checking'
+  const ok = await window.hermes?.hermesCli?.check() ?? false
+  hermesCliAvailable.value = ok ? 'available' : 'missing'
+  if (!ok) return
+
+  hermesProfiles.value = await window.hermes?.hermesCli?.listProfiles() ?? ['default']
+  if (!hermesProfiles.value.includes(hermesProfile.value)) {
+    hermesProfile.value = hermesProfiles.value[0] || 'default'
+  }
+}
+
+async function refreshGatewayStatus(): Promise<void> {
+  if (hermesCliAvailable.value !== 'available') return
+  gatewayStatus.value = await window.hermes?.hermesCli?.gatewayStatus(hermesProfile.value) ?? null
+}
+
+async function startGateway(): Promise<void> {
+  if (gatewayBusy.value) return
+  gatewayBusy.value = true
+  gatewayMessage.value = ''
+  const res = await window.hermes?.hermesCli?.gatewayStart(hermesProfile.value)
+  gatewayMessage.value = res?.ok ? '已触发启动' : (res?.stderr || '启动失败')
+  await refreshGatewayStatus()
+  gatewayBusy.value = false
+}
+
+async function stopGateway(): Promise<void> {
+  if (gatewayBusy.value) return
+  gatewayBusy.value = true
+  gatewayMessage.value = ''
+  const res = await window.hermes?.hermesCli?.gatewayStop(hermesProfile.value)
+  gatewayMessage.value = res?.ok ? '已触发停止' : (res?.stderr || '停止失败')
+  await refreshGatewayStatus()
+  gatewayBusy.value = false
+}
+
+async function restartGateway(): Promise<void> {
+  if (gatewayBusy.value) return
+  gatewayBusy.value = true
+  gatewayMessage.value = ''
+  const res = await window.hermes?.hermesCli?.gatewayRestart(hermesProfile.value)
+  gatewayMessage.value = res?.ok ? '已触发重启' : (res?.stderr || '重启失败')
+  await refreshGatewayStatus()
+  gatewayBusy.value = false
+}
+
+async function initHermesCliPanel(): Promise<void> {
+  await refreshHermesCli()
+  await refreshGatewayStatus()
+}
 </script>
 
 <template>
@@ -374,47 +479,41 @@ function resetSettings(): void {
     <main class="relative flex flex-1 flex-col overflow-hidden">
       <!-- ===== Chat Tab ===== -->
       <template v-if="activeTab === 'chat'">
-        <header class="sticky top-0 z-20 flex h-12 items-center justify-between bg-surface/70 px-8 backdrop-blur-xl">
-          <!-- History dropdown -->
-          <div class="relative">
-            <button
-              class="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-1.5 text-on-surface-variant transition-all hover:bg-surface-variant/40 hover:text-on-surface"
-              @click="toggleHistory"
-            >
-              <span class="material-symbols-outlined text-[18px]">history</span>
-              <span class="font-body-sm max-w-[180px] truncate">{{ currentConversationTitle }}</span>
-              <span class="material-symbols-outlined text-[16px] transition-transform" :class="{ 'rotate-180': historyOpen }">expand_more</span>
-            </button>
-
-            <!-- Dropdown panel -->
-            <div
-              v-if="historyOpen"
-              class="absolute left-0 top-full z-50 mt-1 max-h-[70vh] w-80 overflow-y-auto rounded-xl border border-outline-variant/20 bg-surface-container-high/95 shadow-2xl backdrop-blur-3xl"
-              @click.stop
-            >
-              <!-- New conversation button -->
+        <div class="flex flex-1 overflow-hidden">
+          <aside class="flex w-80 flex-col border-r border-outline-variant/15 bg-surface/40 backdrop-blur-2xl">
+            <div class="flex items-center justify-between px-5 pt-5 pb-4">
+              <div class="flex items-center gap-2">
+                <span class="material-symbols-outlined text-[18px] text-primary">forum</span>
+                <span class="font-body-sm font-semibold text-on-surface">对话</span>
+              </div>
               <button
-                class="flex w-full cursor-pointer items-center gap-3 px-4 py-3 text-primary transition-all hover:bg-primary/10"
+                class="flex cursor-pointer items-center gap-1 rounded-lg px-3 py-1.5 text-on-surface-variant transition-all hover:bg-surface-variant/40 hover:text-on-surface"
                 @click="newConversation"
               >
                 <span class="material-symbols-outlined text-[18px]">add</span>
-                <span class="font-body-sm">新对话</span>
+                <span class="font-body-sm">新建</span>
               </button>
-              <div class="mx-3 h-px bg-outline-variant/20"></div>
-
-              <!-- Conversation groups -->
+            </div>
+            <div class="px-5 pb-4">
+              <input
+                v-model="conversationQuery"
+                class="glass-border w-full rounded-xl bg-surface-container-highest/60 px-4 py-3 font-body-sm text-on-surface outline-none focus:ring-1 focus:ring-primary/50"
+                placeholder="搜索对话..."
+              />
+            </div>
+            <div class="custom-scrollbar flex-1 overflow-y-auto px-2 pb-6">
               <template v-if="conversations.length === 0">
                 <p class="px-4 py-6 text-center font-body-sm text-on-surface-variant">暂无对话记录</p>
               </template>
               <template v-for="(items, group) in groupedConversations" :key="group">
-                <div class="px-4 pt-3 pb-1">
+                <div class="px-4 pt-3 pb-2">
                   <span class="font-label-caps text-label-caps text-primary/60">{{ group }}</span>
                 </div>
                 <div
                   v-for="item in items"
                   :key="item.id"
                   :class="[
-                    'group flex cursor-pointer items-center justify-between px-4 py-2.5 transition-all hover:bg-surface-variant/40',
+                    'group flex cursor-pointer items-center justify-between rounded-xl px-4 py-3 transition-all hover:bg-surface-variant/35',
                     item.id === currentConversationId ? 'bg-primary-container/10' : '',
                   ]"
                   @click="openConversation(item.id)"
@@ -432,105 +531,148 @@ function resetSettings(): void {
                 </div>
               </template>
             </div>
-          </div>
+          </aside>
 
-          <button
-            class="flex cursor-pointer items-center gap-1 rounded-lg px-3 py-1.5 text-on-surface-variant transition-all hover:bg-surface-variant/40 hover:text-on-surface"
-            @click="newConversation"
-          >
-            <span class="material-symbols-outlined text-[18px]">add</span>
-            <span class="font-body-sm">新对话</span>
-          </button>
-        </header>
-        <div ref="scrollEl" class="custom-scrollbar flex-1 space-y-5 overflow-y-auto px-12 pb-28 pt-4" @scroll="onScroll" @click="onMainClick">
-          <div
-            v-for="msg in messages"
-            :key="msg.id"
-            :class="msg.role === 'user' ? 'flex justify-end' : 'flex justify-start'"
-          >
-            <div>
-              <div
-                :class="[
-                  'w-fit max-w-[85%] select-text px-4 py-3 shadow-lg',
-                  msg.role === 'user'
-                    ? 'glass-border rounded-xl rounded-tr-none bg-surface-container-high/80 font-body-lg text-body-lg text-on-surface backdrop-blur-xl'
-                    : 'hermes-accent-line glass-border rounded-xl rounded-tl-none bg-surface-container/60 font-body-lg text-body-lg text-on-surface backdrop-blur-xl',
-                ]"
-              >
-                <template v-if="msg.role === 'user'">
-                  {{ msg.text }}
-                </template>
-                <template v-else>
-                  <div v-if="msg.text" class="markdown-body" v-html="renderMd(msg.text)"></div>
-                  <div v-if="msg.streaming && msg.text" class="ml-1 inline-block animate-pulse">▍</div>
-                  <div v-if="msg.streaming && !msg.text" class="flex items-center gap-1 py-1">
-                    <span class="inline-block h-2 w-2 animate-bounce rounded-full bg-primary/60 [animation-delay:0ms]"></span>
-                    <span class="inline-block h-2 w-2 animate-bounce rounded-full bg-primary/60 [animation-delay:150ms]"></span>
-                    <span class="inline-block h-2 w-2 animate-bounce rounded-full bg-primary/60 [animation-delay:300ms]"></span>
-                  </div>
-                </template>
-              </div>
-              <!-- Action buttons: below the bubble, left-aligned for hermes -->
-              <div v-if="msg.role === 'hermes' && !msg.streaming && msg.text" class="mt-1.5 flex gap-2">
-                <button
+          <section class="relative flex flex-1 flex-col overflow-hidden" @click="onMainClick">
+            <header class="sticky top-0 z-20 flex h-14 items-center justify-between border-b border-outline-variant/10 bg-surface/70 px-8 backdrop-blur-xl">
+              <div class="flex items-center gap-3">
+                <span
                   :class="[
-                    'glass-border flex cursor-pointer items-center gap-1 rounded-full px-3 py-1 font-label-caps text-label-caps transition-all hover:bg-surface-variant/40',
-                    copyFeedbackId === msg.id ? 'text-primary' : 'text-on-surface-variant',
+                    'h-2.5 w-2.5 rounded-full',
+                    connectionStatus === 'connected' ? 'bg-primary animate-pulse' :
+                    connectionStatus === 'checking' ? 'bg-yellow-400 animate-pulse' :
+                    'bg-error',
                   ]"
-                  @click="copyMessage(msg.id, msg.text)"
-                >
-                  <span class="material-symbols-outlined text-[14px]">
-                    {{ copyFeedbackId === msg.id ? 'check' : 'content_copy' }}
-                  </span>
-                  {{ copyFeedbackId === msg.id ? '已复制' : '复制' }}
-                </button>
-                <button
-                  class="glass-border flex cursor-pointer items-center gap-1 rounded-full px-3 py-1 font-label-caps text-label-caps text-on-surface-variant transition-all hover:bg-surface-variant/40"
-                  @click="speakMessage(msg.text)"
-                >
-                  <span class="material-symbols-outlined text-[14px]">volume_up</span>
-                  播报
-                </button>
+                />
+                <span class="font-body-sm font-semibold text-on-surface">{{ currentConversationTitle }}</span>
+              </div>
+              <button
+                class="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-1.5 text-on-surface-variant transition-all hover:bg-surface-variant/40 hover:text-on-surface"
+                @click="switchTab('settings')"
+              >
+                <span class="material-symbols-outlined text-[18px]">settings</span>
+                <span class="font-body-sm">设置</span>
+              </button>
+            </header>
+
+            <div ref="scrollEl" class="custom-scrollbar flex-1 space-y-5 overflow-y-auto px-12 pb-28 pt-6" @scroll="onScroll">
+              <div
+                v-for="msg in messages"
+                :key="msg.id"
+                :class="msg.role === 'user' ? 'flex justify-end' : 'flex justify-start'"
+              >
+                <div>
+                  <div
+                    :class="[
+                      'w-fit max-w-[85%] select-text px-4 py-3 shadow-lg',
+                      msg.role === 'user'
+                        ? 'glass-border rounded-xl rounded-tr-none bg-surface-container-high/80 font-body-lg text-body-lg text-on-surface backdrop-blur-xl'
+                        : 'hermes-accent-line glass-border rounded-xl rounded-tl-none bg-surface-container/60 font-body-lg text-body-lg text-on-surface backdrop-blur-xl',
+                    ]"
+                  >
+                    <template v-if="msg.role === 'user'">
+                      <div v-if="msg.text">{{ msg.text }}</div>
+                      <div v-if="mediaParts(msg.parts).length" class="mt-3 grid grid-cols-2 gap-3">
+                        <template v-for="m in mediaParts(msg.parts)" :key="m.src">
+                          <img v-if="m.type === 'image'" :src="m.src" class="glass-border max-h-48 w-full rounded-xl object-cover" />
+                          <a v-else :href="m.src" class="glass-border rounded-xl bg-surface-container-low/40 px-3 py-2 font-body-sm text-on-surface-variant hover:text-on-surface">
+                            {{ m.type }}
+                          </a>
+                        </template>
+                      </div>
+                    </template>
+                    <template v-else>
+                      <div v-if="msg.text" class="markdown-body" v-html="renderMd(msg.text)"></div>
+                      <div v-if="mediaParts(msg.parts).length" class="mt-3 grid grid-cols-2 gap-3">
+                        <template v-for="m in mediaParts(msg.parts)" :key="m.src">
+                          <img v-if="m.type === 'image'" :src="m.src" class="glass-border max-h-64 w-full rounded-xl object-cover" />
+                          <a v-else :href="m.src" class="glass-border rounded-xl bg-surface-container-low/40 px-3 py-2 font-body-sm text-on-surface-variant hover:text-on-surface">
+                            {{ m.type }}
+                          </a>
+                        </template>
+                      </div>
+                      <div v-if="msg.streaming && msg.text" class="ml-1 inline-block animate-pulse">▍</div>
+                      <div v-if="msg.streaming && !msg.text" class="flex items-center gap-1 py-1">
+                        <span class="inline-block h-2 w-2 animate-bounce rounded-full bg-primary/60 [animation-delay:0ms]"></span>
+                        <span class="inline-block h-2 w-2 animate-bounce rounded-full bg-primary/60 [animation-delay:150ms]"></span>
+                        <span class="inline-block h-2 w-2 animate-bounce rounded-full bg-primary/60 [animation-delay:300ms]"></span>
+                      </div>
+                    </template>
+                  </div>
+                  <div v-if="msg.role === 'hermes' && !msg.streaming && msg.text" class="mt-1.5 flex gap-2">
+                    <button
+                      :class="[
+                        'glass-border flex cursor-pointer items-center gap-1 rounded-full px-3 py-1 font-label-caps text-label-caps transition-all hover:bg-surface-variant/40',
+                        copyFeedbackId === msg.id ? 'text-primary' : 'text-on-surface-variant',
+                      ]"
+                      @click="copyMessage(msg.id, msg.text)"
+                    >
+                      <span class="material-symbols-outlined text-[14px]">
+                        {{ copyFeedbackId === msg.id ? 'check' : 'content_copy' }}
+                      </span>
+                      {{ copyFeedbackId === msg.id ? '已复制' : '复制' }}
+                    </button>
+                    <button
+                      class="glass-border flex cursor-pointer items-center gap-1 rounded-full px-3 py-1 font-label-caps text-label-caps text-on-surface-variant transition-all hover:bg-surface-variant/40"
+                      @click="speakMessage(msg.text)"
+                    >
+                      <span class="material-symbols-outlined text-[14px]">volume_up</span>
+                      播报
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
-          </div>
-        </div>
 
-        <div class="absolute bottom-6 left-1/2 w-full max-w-3xl -translate-x-1/2 px-6">
-          <div
-            class="glass-border flex items-center gap-2 rounded-full bg-surface-container-lowest/90 p-2 shadow-2xl backdrop-blur-2xl focus-within:ring-2 focus-within:ring-primary/20"
-          >
-            <button class="flex h-10 w-10 cursor-pointer items-center justify-center rounded-full text-on-surface-variant transition-colors hover:text-primary" @click="newConversation">
-              <span class="material-symbols-outlined">add_circle</span>
-            </button>
-            <input
-              v-model="input"
-              :disabled="isStreaming"
-              class="flex-grow border-none bg-transparent px-2 font-body-lg text-on-surface outline-none placeholder:text-on-surface-variant/50 focus:ring-0 disabled:opacity-50"
-              placeholder="与 Hermes 交流..."
-              @keyup.enter="send"
-            />
-            <div class="flex items-center gap-1 pr-1">
-              <button class="flex h-10 w-10 cursor-pointer items-center justify-center rounded-full text-on-surface-variant transition-colors hover:text-primary">
-                <span class="material-symbols-outlined">mic</span>
-              </button>
-              <button
-                v-if="isStreaming"
-                class="flex h-10 w-10 cursor-pointer items-center justify-center rounded-full bg-error text-on-error shadow-lg transition-all active:scale-95"
-                @click="stopStreaming"
+            <div class="absolute bottom-6 left-1/2 w-full max-w-3xl -translate-x-1/2 px-6">
+              <input ref="fileInputEl" type="file" accept="image/*" multiple class="hidden" @change="onFilesPicked" />
+              <div v-if="pendingMedia.length" class="mb-3 flex flex-wrap gap-3 rounded-2xl bg-surface-container/60 p-3 backdrop-blur-xl">
+                <div v-for="m in pendingMedia" :key="m.src" class="relative">
+                  <img v-if="m.type === 'image'" :src="m.src" class="glass-border h-20 w-20 rounded-xl object-cover" />
+                  <div v-else class="glass-border flex h-20 w-20 items-center justify-center rounded-xl bg-surface-container-low/40 font-body-xs text-on-surface-variant">
+                    {{ m.type }}
+                  </div>
+                </div>
+              </div>
+              <div
+                class="glass-border flex items-center gap-2 rounded-full bg-surface-container-lowest/90 p-2 shadow-2xl backdrop-blur-2xl focus-within:ring-2 focus-within:ring-primary/20"
               >
-                <span class="material-symbols-outlined">stop</span>
-              </button>
-              <button
-                v-else
-                class="flex h-10 w-10 cursor-pointer items-center justify-center rounded-full bg-primary text-on-primary shadow-lg transition-all active:scale-95"
-                :disabled="!input.trim()"
-                @click="send"
-              >
-                <span class="material-symbols-outlined">send</span>
-              </button>
+                <button class="flex h-10 w-10 cursor-pointer items-center justify-center rounded-full text-on-surface-variant transition-colors hover:text-primary" @click="newConversation">
+                  <span class="material-symbols-outlined">add_circle</span>
+                </button>
+                <button class="flex h-10 w-10 cursor-pointer items-center justify-center rounded-full text-on-surface-variant transition-colors hover:text-primary" :disabled="isStreaming" @click="openFilePicker">
+                  <span class="material-symbols-outlined">attach_file</span>
+                </button>
+                <input
+                  v-model="input"
+                  :disabled="isStreaming"
+                  class="flex-grow border-none bg-transparent px-2 font-body-lg text-on-surface outline-none placeholder:text-on-surface-variant/50 focus:ring-0 disabled:opacity-50"
+                  placeholder="与 Hermes 交流..."
+                  @keyup.enter="send"
+                />
+                <div class="flex items-center gap-1 pr-1">
+                  <button class="flex h-10 w-10 cursor-pointer items-center justify-center rounded-full text-on-surface-variant transition-colors hover:text-primary">
+                    <span class="material-symbols-outlined">mic</span>
+                  </button>
+                  <button
+                    v-if="isStreaming"
+                    class="flex h-10 w-10 cursor-pointer items-center justify-center rounded-full bg-error text-on-error shadow-lg transition-all active:scale-95"
+                    @click="stopStreaming"
+                  >
+                    <span class="material-symbols-outlined">stop</span>
+                  </button>
+                  <button
+                    v-else
+                    class="flex h-10 w-10 cursor-pointer items-center justify-center rounded-full bg-primary text-on-primary shadow-lg transition-all active:scale-95"
+                    :disabled="!input.trim() && pendingMedia.length === 0"
+                    @click="send"
+                  >
+                    <span class="material-symbols-outlined">send</span>
+                  </button>
+                </div>
+              </div>
             </div>
-          </div>
+          </section>
         </div>
       </template>
 
@@ -595,7 +737,92 @@ function resetSettings(): void {
             </div>
           </section>
 
-          <!-- Voice Config -->
+          <section class="glass-panel flex flex-col gap-8 rounded-xl p-8 shadow-2xl">
+            <div class="flex items-center justify-between border-b border-outline-variant/20 pb-4">
+              <div class="flex items-center gap-3">
+                <span class="material-symbols-outlined text-3xl text-primary">terminal</span>
+                <h2 class="font-headline-md text-headline-md">Hermes CLI 托管</h2>
+              </div>
+              <div class="flex items-center gap-2">
+                <span
+                  :class="[
+                    'h-2.5 w-2.5 rounded-full',
+                    hermesCliAvailable === 'available' ? 'bg-primary animate-pulse' :
+                    hermesCliAvailable === 'checking' ? 'bg-yellow-400 animate-pulse' :
+                    'bg-error',
+                  ]"
+                />
+                <span class="font-mono-status text-mono-status text-on-surface-variant">
+                  {{ hermesCliAvailable === 'available' ? 'CLI 可用' : hermesCliAvailable === 'checking' ? '检测中...' : '未检测到 hermes' }}
+                </span>
+              </div>
+            </div>
+
+            <div class="space-y-6">
+              <div class="grid grid-cols-2 gap-6">
+                <div class="flex flex-col gap-2">
+                  <label class="font-label-caps text-label-caps uppercase tracking-widest text-on-surface-variant px-1">Profile</label>
+                  <select
+                    v-model="hermesProfile"
+                    :disabled="hermesCliAvailable !== 'available' || gatewayBusy"
+                    class="glass-border appearance-none rounded-lg bg-surface-container-highest px-4 py-3 font-body-sm text-on-surface outline-none focus:ring-1 focus:ring-primary/50 disabled:opacity-60"
+                    @change="refreshGatewayStatus"
+                  >
+                    <option v-for="p in hermesProfiles" :key="p" :value="p">{{ p }}</option>
+                  </select>
+                </div>
+                <div class="flex flex-col gap-2">
+                  <label class="font-label-caps text-label-caps uppercase tracking-widest text-on-surface-variant px-1">Gateway</label>
+                  <div class="glass-border flex items-center justify-between rounded-lg bg-surface-container-highest px-4 py-3">
+                    <span class="font-body-sm text-on-surface">
+                      {{ gatewayStatus?.running ? '运行中' : '未运行' }}
+                    </span>
+                    <button
+                      class="rounded-lg px-3 py-1 font-body-xs text-on-surface-variant transition-all hover:bg-surface-variant/40 hover:text-on-surface disabled:opacity-60"
+                      :disabled="hermesCliAvailable !== 'available' || gatewayBusy"
+                      @click="refreshGatewayStatus"
+                    >
+                      刷新
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="flex flex-wrap gap-3">
+                <button
+                  class="rounded-xl bg-primary px-6 py-3 font-body-sm font-semibold text-on-primary shadow-xl shadow-primary/30 transition-all hover:bg-primary-fixed-dim active:scale-95 disabled:opacity-60"
+                  :disabled="hermesCliAvailable !== 'available' || gatewayBusy"
+                  @click="startGateway"
+                >
+                  启动
+                </button>
+                <button
+                  class="rounded-xl border border-outline-variant/40 px-6 py-3 font-body-sm font-semibold text-on-surface-variant transition-all hover:bg-surface-variant/40 hover:text-on-surface active:scale-95 disabled:opacity-60"
+                  :disabled="hermesCliAvailable !== 'available' || gatewayBusy"
+                  @click="stopGateway"
+                >
+                  停止
+                </button>
+                <button
+                  class="rounded-xl border border-outline-variant/40 px-6 py-3 font-body-sm font-semibold text-on-surface-variant transition-all hover:bg-surface-variant/40 hover:text-on-surface active:scale-95 disabled:opacity-60"
+                  :disabled="hermesCliAvailable !== 'available' || gatewayBusy"
+                  @click="restartGateway"
+                >
+                  重启
+                </button>
+              </div>
+
+              <div v-if="gatewayMessage" class="glass-border rounded-lg bg-surface-container-high/60 px-4 py-3 font-body-sm text-on-surface-variant">
+                {{ gatewayMessage }}
+              </div>
+
+              <details v-if="gatewayStatus?.raw?.stdout || gatewayStatus?.raw?.stderr" class="glass-border rounded-lg bg-surface-container-low/40 px-4 py-3">
+                <summary class="cursor-pointer font-body-sm text-on-surface-variant">查看 CLI 输出</summary>
+                <pre class="mt-3 whitespace-pre-wrap break-words font-mono-status text-mono-status text-on-surface-variant">{{ gatewayStatus?.raw?.stdout || gatewayStatus?.raw?.stderr }}</pre>
+              </details>
+            </div>
+          </section>
+
           <section class="glass-panel flex flex-col gap-8 rounded-xl p-8 shadow-2xl">
             <div class="flex items-center gap-3 border-b border-outline-variant/20 pb-4">
               <span class="material-symbols-outlined text-3xl text-primary">settings_voice</span>

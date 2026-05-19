@@ -1,6 +1,6 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { IPC } from '@shared/ipc-channels'
-import type { AgentRunEvent, AgentRunStarted, AgentSendRequest, MessagePart } from '@shared/types'
+import type { AgentRunEvent, AgentRunStarted, AgentSendRequest, MediaImportRequest, MediaImportResult, MessagePart } from '@shared/types'
 
 interface Conversation {
   id: string
@@ -42,6 +42,18 @@ const api = {
       ipcRenderer.on(IPC.Agent.Event, handler)
       return () => { ipcRenderer.removeListener(IPC.Agent.Event, handler) }
     },
+  },
+  hermesCli: {
+    check: (): Promise<boolean> => ipcRenderer.invoke(IPC.HermesCli.Check),
+    listProfiles: (): Promise<string[]> => ipcRenderer.invoke(IPC.HermesCli.ListProfiles),
+    gatewayStatus: (profile: string) => ipcRenderer.invoke(IPC.HermesCli.GatewayStatus, profile),
+    gatewayStart: (profile: string) => ipcRenderer.invoke(IPC.HermesCli.GatewayStart, profile),
+    gatewayStop: (profile: string) => ipcRenderer.invoke(IPC.HermesCli.GatewayStop, profile),
+    gatewayRestart: (profile: string) => ipcRenderer.invoke(IPC.HermesCli.GatewayRestart, profile),
+  },
+  media: {
+    filePath: (file: File): string => webUtils.getPathForFile(file),
+    import: (req: MediaImportRequest): Promise<MediaImportResult> => ipcRenderer.invoke(IPC.Media.Import, req),
   },
   pet: {
     hide: () => ipcRenderer.send(IPC.Pet.Hide),

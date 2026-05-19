@@ -83,7 +83,7 @@ HermesPet/
 
 - **Node.js** >= 18
 - **pnpm** >= 9
-- **Hermes Agent** — 提供 LLM API 服务（端口 8642）
+- **Hermes Agent**（本机已安装 `hermes` 命令）
 
 ## 安装
 
@@ -102,29 +102,9 @@ pnpm dev
 - 右键桌宠 → 聊天 → 打开独立聊天窗口
 
 ## Hermes Agent 配置
+聊天与桌宠运行时通过 Electron main 进程启动的本地 Bridge 与 Hermes 交互；Renderer 不直接请求 localhost API。
 
-聊天功能依赖本地 Hermes Agent 的 API 服务器。在 `~/.hermes/.env` 中添加：
-
-```env
-API_SERVER_ENABLED=true
-API_SERVER_KEY=your-secret-key
-API_SERVER_CORS_ORIGINS=http://localhost:5173
-```
-
-然后重启 Hermes gateway：
-
-```bash
-hermes gateway
-```
-
-验证：
-
-```bash
-curl http://localhost:8642/health
-# → {"status":"ok","platform":"hermes-agent"}
-```
-
-在聊天窗口的「系统设置」页面可以修改 Base URL 和 API Key。
+如果你需要管理本机 Hermes 的 profile / gateway（启动、停止、重启、查看 status），在聊天窗口「系统设置」里使用 “Hermes CLI 托管” 面板即可（直接调用本机 `hermes` 命令）。
 
 ## 命令
 

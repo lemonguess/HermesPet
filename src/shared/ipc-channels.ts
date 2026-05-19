@@ -18,6 +18,17 @@ export const IPC = {
     Event: 'agent:event',
     Check: 'agent:check',
   },
+  HermesCli: {
+    Check: 'hermes-cli:check',
+    ListProfiles: 'hermes-cli:list-profiles',
+    GatewayStatus: 'hermes-cli:gateway-status',
+    GatewayStart: 'hermes-cli:gateway-start',
+    GatewayStop: 'hermes-cli:gateway-stop',
+    GatewayRestart: 'hermes-cli:gateway-restart',
+  },
+  Media: {
+    Import: 'media:import',
+  },
   Pet: {
     Hide: 'pet:hide',
     Show: 'pet:show',
@@ -52,3 +63,10 @@ export type IpcChannel =
   | typeof IPC.Agent.Abort
   | typeof IPC.Agent.Event
   | typeof IPC.Agent.Check
+  | typeof IPC.HermesCli.Check
+  | typeof IPC.HermesCli.ListProfiles
+  | typeof IPC.HermesCli.GatewayStatus
+  | typeof IPC.HermesCli.GatewayStart
+  | typeof IPC.HermesCli.GatewayStop
+  | typeof IPC.HermesCli.GatewayRestart
+  | typeof IPC.Media.Import

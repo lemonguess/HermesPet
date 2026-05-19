@@ -1,4 +1,4 @@
-import type { AgentRunEvent, AgentRunStarted, AgentSendRequest, MessagePart } from '@shared/types'
+import type { AgentRunEvent, AgentRunStarted, AgentSendRequest, HermesCliResult, HermesGatewayStatus, MediaImportRequest, MediaImportResult, MessagePart } from '@shared/types'
 
 declare global {
   interface Conversation {
@@ -34,6 +34,18 @@ declare global {
         send: (request: AgentSendRequest) => Promise<AgentRunStarted>
         abort: (sessionId: string, runId?: string) => Promise<boolean>
         onEvent: (cb: (event: AgentRunEvent) => void) => () => void
+      }
+      hermesCli: {
+        check: () => Promise<boolean>
+        listProfiles: () => Promise<string[]>
+        gatewayStatus: (profile: string) => Promise<HermesGatewayStatus>
+        gatewayStart: (profile: string) => Promise<HermesCliResult>
+        gatewayStop: (profile: string) => Promise<HermesCliResult>
+        gatewayRestart: (profile: string) => Promise<HermesCliResult>
+      }
+      media: {
+        filePath: (file: File) => string
+        import: (req: MediaImportRequest) => Promise<MediaImportResult>
       }
       pet: {
         hide: () => void
