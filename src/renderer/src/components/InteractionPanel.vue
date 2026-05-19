@@ -1,15 +1,19 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import { getOutfitPreset, type OutfitId } from '../live2d/outfit-presets'
 
 // --- Outfit ---
 const activeOutfit = ref('normal')
 
-function setOutfit(id: string): void {
+function setOutfit(id: OutfitId): void {
   activeOutfit.value = id
-  // Part20 is the dark outfit layer; keep Part28 visible as the base outfit.
-  const dark = id === 'dark'
-  window.hermes?.pet?.setPartOpacity('Part28', 1)
-  window.hermes?.pet?.setPartOpacity('Part20', dark ? 1 : 0)
+  const preset = getOutfitPreset(id)
+  for (const [partId, opacity] of Object.entries(preset.parts)) {
+    window.hermes?.pet?.setPartOpacity(partId, opacity)
+  }
+  for (const [paramId, value] of Object.entries(preset.params)) {
+    window.hermes?.pet?.setParam(paramId, value)
+  }
 }
 
 // --- Expressions ---
@@ -110,7 +114,7 @@ function resetAll(): void {
         </div>
         <div class="flex gap-3">
           <button
-            v-for="o in ([{ id: 'normal', label: '常服', icon: 'checkroom' }, { id: 'dark', label: '暗黑', icon: 'dark_mode' }])"
+            v-for="o in ([{ id: 'normal', label: '常服', icon: 'checkroom' }, { id: 'dark', label: '暗黑', icon: 'dark_mode' }] as const)"
             :key="o.id"
             :class="[
               'flex flex-1 cursor-pointer flex-col items-center gap-2 rounded-xl border-2 px-4 py-4 transition-all',

@@ -4,6 +4,8 @@ import type { Live2DModel } from 'pixi-live2d-display/cubism4'
 import { createLive2DStage, type Live2DStage } from '../live2d/stage'
 import { loadModel } from '../live2d/loader'
 import { attachTuziDriver, type TuziDriver } from '../live2d/tuzi-driver'
+import { createLookState, relaxLookTarget, setLookTargetFromNormalizedPointer, stepLookState } from '../live2d/look-controller'
+import { getOutfitPreset, type OutfitId } from '../live2d/outfit-presets'
 import { useRuntime } from '../stores/runtime'
 
 const MODEL_URL = '/@fs/Users/lixincheng/workspace/HermesPet/live2d/tuzi_mian__2_/tuzi%20mian.model3.json'
@@ -41,7 +43,7 @@ let dragStartWinX = 0
 let dragStartWinY = 0
 const partOpacityOverrides = new Map<string, number>()
 const partSubtreeCache = new Map<string, number[]>()
-let lookTarget = { angleX: 0, angleY: 0, eyeX: 0, eyeY: 0 }
+let lookState = createLookState()
 
 const REF_WIDTH = 233
 const REF_HEIGHT = 567
@@ -57,18 +59,18 @@ function fitModel(m: Live2DModel, viewW: number, viewH: number): void {
 }
 
 function resetEyes(): void {
-  lookTarget = { angleX: 0, angleY: 0, eyeX: 0, eyeY: 0 }
-  applyLookTarget()
+  relaxLookTarget(lookState)
 }
 
 function applyLookTarget(): void {
   if (!model) return
   const core = (model as any).internalModel?.coreModel
   if (!core) return
-  core.setParameterValueById('ParamAngleX', lookTarget.angleX)
-  core.setParameterValueById('ParamAngleY', lookTarget.angleY)
-  core.setParameterValueById('ParamEyeBallX', lookTarget.eyeX)
-  core.setParameterValueById('ParamEyeBallY', lookTarget.eyeY)
+  const current = stepLookState(lookState)
+  core.setParameterValueById('ParamAngleX', current.angleX)
+  core.setParameterValueById('ParamAngleY', current.angleY)
+  core.setParameterValueById('ParamEyeBallX', current.eyeX)
+  core.setParameterValueById('ParamEyeBallY', current.eyeY)
 }
 
 function getPartSubtreeIndices(id: string): number[] {
@@ -118,6 +120,22 @@ function setPartOpacity(id: string, opacity: number): void {
   core.setPartOpacityById(id, opacity)
 }
 
+function setModelParam(id: string, value: number): void {
+  const core = (model as any)?.internalModel?.coreModel
+  if (core) core.setParameterValueById(id, value)
+}
+
+function applyOutfitPreset(id: OutfitId): void {
+  const preset = getOutfitPreset(id)
+  for (const [partId, opacity] of Object.entries(preset.parts)) {
+    partOpacityOverrides.set(partId, opacity)
+    setPartOpacity(partId, opacity)
+  }
+  for (const [paramId, value] of Object.entries(preset.params)) {
+    setModelParam(paramId, value)
+  }
+}
+
 function cleanup(): void {
   if (onMove && canvas.value) {
     canvas.value.removeEventListener('mousemove', onMove)
@@ -145,6 +163,7 @@ function cleanup(): void {
   }
   partOpacityOverrides.clear()
   partSubtreeCache.clear()
+  lookState = createLookState()
   unsubParam?.(); unsubParam = null
   unsubPart?.(); unsubPart = null
   unsubMouseLeave?.(); unsubMouseLeave = null
@@ -205,13 +224,7 @@ onMounted(async () => {
       const anchorY = rect.height * 0.1
       const nx = Math.max(-1, Math.min(1, (mx - anchorX) / (rect.width * 0.5)))
       const ny = Math.max(-1, Math.min(1, (my - anchorY) / (rect.height * 0.5)))
-      lookTarget = {
-        angleX: nx * 30,
-        angleY: -ny * 30,
-        eyeX: nx,
-        eyeY: -ny,
-      }
-      applyLookTarget()
+      setLookTargetFromNormalizedPointer(lookState, nx, ny)
     }
     el.addEventListener('mousemove', onMove)
 
@@ -237,8 +250,7 @@ onMounted(async () => {
     g.__hermespet_model = model
     g.__hermespet_driver = driver
 
-    partOpacityOverrides.set('Part28', 1)
-    partOpacityOverrides.set('Part20', 0)
+    applyOutfitPreset('normal')
     applyRuntimeOverrides = (): void => {
       for (const [id, opacity] of partOpacityOverrides) {
         setPartOpacity(id, opacity)
@@ -261,9 +273,7 @@ onMounted(async () => {
 
     // IPC: model parameter control from chat window
     unsubParam = window.hermes?.pet?.onSetParam?.((id: string, value: number) => {
-      console.log('[IPC] setParam', id, value)
-      const core = (model as any)?.internalModel?.coreModel
-      if (core) core.setParameterValueById(id, value)
+      setModelParam(id, value)
     }) ?? null
     unsubPart = window.hermes?.pet?.onSetPartOpacity?.((id: string, opacity: number) => {
       partOpacityOverrides.set(id, opacity)
@@ -272,12 +282,9 @@ onMounted(async () => {
 
     // IPC: mouse leave window → reset eyes (sent by main process cursor polling)
     unsubMouseLeave = window.hermes?.pet?.onMouseLeave?.(() => {
-      console.log('[IPC] MouseLeave → resetEyes')
       resetEyes()
     }) ?? null
-    unsubMouseEnter = window.hermes?.pet?.onMouseEnter?.(() => {
-      console.log('[IPC] MouseEnter')
-    }) ?? null
+    unsubMouseEnter = window.hermes?.pet?.onMouseEnter?.(() => undefined) ?? null
 
     runtime.setStatus('ready')
   } catch (err) {

@@ -5,6 +5,7 @@ import { createMainWindow, createChatWindow, createContextMenuWindow } from './w
 import { ConversationStore } from './store'
 import { HermesBridgeService } from './hermes/bridge-service'
 import { HermesCliService } from './hermes/hermes-cli-service'
+import { HermesDashboardService } from './hermes/hermes-dashboard-service'
 import { MediaService } from './media/media-service'
 
 let mainWindow: BrowserWindow | null = null
@@ -13,6 +14,7 @@ let contextMenuWindow: BrowserWindow | null = null
 let store: ConversationStore | null = null
 let bridgeService: HermesBridgeService | null = null
 let cliService: HermesCliService | null = null
+let dashboardService: HermesDashboardService | null = null
 let mediaService: MediaService | null = null
 
 function openChat(tab?: string): void {
@@ -58,11 +60,9 @@ function registerIpc(): void {
     mainWindow.setPosition(Math.round(x), Math.round(y))
   })
   ipcMain.on(IPC.Pet.SetParam, (_e, id: string, value: number) => {
-    console.log('[Main] SetParam', id, value)
     mainWindow?.webContents.send(IPC.Pet.SetParam, id, value)
   })
   ipcMain.on(IPC.Pet.SetPartOpacity, (_e, id: string, opacity: number) => {
-    console.log('[Main] SetPartOpacity', id, opacity)
     mainWindow?.webContents.send(IPC.Pet.SetPartOpacity, id, opacity)
   })
   ipcMain.handle(IPC.Pet.GetPosition, () => {
@@ -101,6 +101,8 @@ app.whenReady().then(() => {
   bridgeService.register()
   cliService = new HermesCliService()
   cliService.register()
+  dashboardService = new HermesDashboardService(app.getPath('userData'))
+  dashboardService.register()
   mediaService = new MediaService()
   mediaService.register()
   registerIpc()
@@ -129,12 +131,10 @@ app.whenReady().then(() => {
 
     if (inside && !wasInside) {
       // Mouse entered window — disable click-through so renderer gets events
-      console.log('[Polling] cursor entered window → setIgnoreMouseEvents(false)')
       mainWindow.setIgnoreMouseEvents(false)
       mainWindow.webContents.send(IPC.Pet.MouseEnter)
     } else if (!inside && wasInside) {
       // Mouse left window — enable click-through + tell renderer to reset eyes
-      console.log('[Polling] cursor left window → setIgnoreMouseEvents(true)')
       mainWindow.setIgnoreMouseEvents(true, { forward: true })
       mainWindow.webContents.send(IPC.Pet.MouseLeave)
     }

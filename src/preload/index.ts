@@ -1,6 +1,16 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { IPC } from '@shared/ipc-channels'
-import type { AgentRunEvent, AgentRunStarted, AgentSendRequest, MediaImportRequest, MediaImportResult, MessagePart } from '@shared/types'
+import type {
+  AgentRunEvent,
+  AgentRunStarted,
+  AgentSendRequest,
+  HermesDashboardSummary,
+  HermesLogFile,
+  HermesModelGroup,
+  MediaImportRequest,
+  MediaImportResult,
+  MessagePart,
+} from '@shared/types'
 
 interface Conversation {
   id: string
@@ -50,6 +60,11 @@ const api = {
     gatewayStart: (profile: string) => ipcRenderer.invoke(IPC.HermesCli.GatewayStart, profile),
     gatewayStop: (profile: string) => ipcRenderer.invoke(IPC.HermesCli.GatewayStop, profile),
     gatewayRestart: (profile: string) => ipcRenderer.invoke(IPC.HermesCli.GatewayRestart, profile),
+  },
+  dashboard: {
+    summary: (): Promise<HermesDashboardSummary> => ipcRenderer.invoke(IPC.HermesDashboard.Summary),
+    models: (): Promise<HermesModelGroup[]> => ipcRenderer.invoke(IPC.HermesDashboard.Models),
+    logs: (): Promise<HermesLogFile[]> => ipcRenderer.invoke(IPC.HermesDashboard.Logs),
   },
   media: {
     filePath: (file: File): string => webUtils.getPathForFile(file),

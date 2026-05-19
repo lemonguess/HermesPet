@@ -139,3 +139,34 @@ export interface HermesGatewayStatus {
   running: boolean
   raw: HermesCliResult
 }
+
+export interface HermesModelGroup {
+  provider: string
+  label: string
+  models: string[]
+  current?: boolean
+}
+
+export interface HermesLogFile {
+  name: string
+  path: string
+  size: string
+  modified: string
+}
+
+export interface HermesDashboardModule {
+  id: string
+  label: string
+  status: 'available' | 'partial' | 'planned'
+  detail: string
+}
+
+export interface HermesDashboardSummary {
+  cliAvailable: boolean
+  activeProfile: string
+  profiles: string[]
+  gateway: HermesGatewayStatus | null
+  models: HermesModelGroup[]
+  logs: HermesLogFile[]
+  modules: HermesDashboardModule[]
+}

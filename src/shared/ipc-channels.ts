@@ -26,6 +26,11 @@ export const IPC = {
     GatewayStop: 'hermes-cli:gateway-stop',
     GatewayRestart: 'hermes-cli:gateway-restart',
   },
+  HermesDashboard: {
+    Summary: 'hermes-dashboard:summary',
+    Models: 'hermes-dashboard:models',
+    Logs: 'hermes-dashboard:logs',
+  },
   Media: {
     Import: 'media:import',
   },
@@ -69,4 +74,7 @@ export type IpcChannel =
   | typeof IPC.HermesCli.GatewayStart
   | typeof IPC.HermesCli.GatewayStop
   | typeof IPC.HermesCli.GatewayRestart
+  | typeof IPC.HermesDashboard.Summary
+  | typeof IPC.HermesDashboard.Models
+  | typeof IPC.HermesDashboard.Logs
   | typeof IPC.Media.Import

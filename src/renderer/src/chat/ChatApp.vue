@@ -3,11 +3,43 @@ import { ref, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import MarkdownIt from 'markdown-it'
 import { sendMessage, checkHealth, setHermesConfig, getHermesConfig, type ChatMessage } from '../api/hermes'
 import InteractionPanel from '../components/InteractionPanel.vue'
-import type { HermesGatewayStatus, MediaPart, MessagePart } from '@shared/types'
+import type { HermesDashboardSummary, HermesGatewayStatus, MediaPart, MessagePart } from '@shared/types'
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
 
-type Tab = 'chat' | 'settings' | 'interaction'
+type Tab =
+  | 'chat'
+  | 'history'
+  | 'groupChat'
+  | 'search'
+  | 'relay'
+  | 'jobs'
+  | 'kanban'
+  | 'channels'
+  | 'skills'
+  | 'plugins'
+  | 'memory'
+  | 'models'
+  | 'logs'
+  | 'usage'
+  | 'skillsUsage'
+  | 'gateways'
+  | 'profiles'
+  | 'settings'
+  | 'interaction'
+
+interface NavItem {
+  id: Tab
+  icon: string
+  label: string
+  beta?: boolean
+}
+
+interface NavGroup {
+  id: string
+  label: string
+  items: NavItem[]
+}
 
 interface Message {
   id: number
@@ -28,6 +60,7 @@ const connectionStatus = ref<'checking' | 'connected' | 'disconnected'>('checkin
 const conversations = ref<Conversation[]>([])
 const historyOpen = ref(false)
 const conversationQuery = ref('')
+const conversationListCollapsed = ref(false)
 const copyFeedbackId = ref<number | null>(null)
 const oldestLoadedAt = ref<number | null>(null) // Timestamp of oldest loaded message for pagination
 let nextId = 1
@@ -37,6 +70,64 @@ let unsubSetTab: (() => void) | undefined
 let isLoadingOlder = false
 const pendingMedia = ref<MediaPart[]>([])
 const fileInputEl = ref<HTMLInputElement | null>(null)
+const dashboardSummary = ref<HermesDashboardSummary | null>(null)
+const dashboardLoading = ref(false)
+const collapsedNavGroups = ref<Record<string, boolean>>({})
+
+const navGroups: NavGroup[] = [
+  {
+    id: 'conversation',
+    label: '对话',
+    items: [
+      { id: 'chat', icon: 'chat_bubble', label: '对话' },
+      { id: 'history', icon: 'history', label: '历史' },
+      { id: 'groupChat', icon: 'groups', label: '群聊', beta: true },
+      { id: 'search', icon: 'search', label: '搜索' },
+      { id: 'relay', icon: 'open_in_new', label: '中转站' },
+    ],
+  },
+  {
+    id: 'agent',
+    label: '代理',
+    items: [
+      { id: 'jobs', icon: 'event_note', label: '任务' },
+      { id: 'kanban', icon: 'view_kanban', label: '看板' },
+      { id: 'channels', icon: 'hub', label: '频道' },
+      { id: 'skills', icon: 'layers', label: '技能' },
+      { id: 'plugins', icon: 'extension', label: '插件' },
+      { id: 'memory', icon: 'psychology', label: '记忆' },
+      { id: 'models', icon: 'neurology', label: '模型' },
+    ],
+  },
+  {
+    id: 'monitoring',
+    label: '监控',
+    items: [
+      { id: 'logs', icon: 'article', label: '日志' },
+      { id: 'usage', icon: 'bar_chart', label: '用量' },
+      { id: 'skillsUsage', icon: 'monitoring', label: '技能用量' },
+    ],
+  },
+  {
+    id: 'system',
+    label: '系统',
+    items: [
+      { id: 'gateways', icon: 'dns', label: '网关' },
+      { id: 'profiles', icon: 'person', label: '用户' },
+      { id: 'interaction', icon: 'touch_app', label: '交互模式' },
+      { id: 'settings', icon: 'settings', label: '设置' },
+    ],
+  },
+]
+
+const moduleMeta = computed(() => {
+  const all = navGroups.flatMap(group => group.items)
+  return all.find(item => item.id === activeTab.value) ?? all[0]
+})
+
+const activeModuleInfo = computed(() => {
+  return dashboardSummary.value?.modules.find(module => module.id === activeTab.value)
+})
 
 // --- Conversations ---
 
@@ -129,6 +220,26 @@ async function deleteConversation(id: string, e: Event): Promise<void> {
   await loadConversations()
 }
 
+function toggleNavGroup(id: string): void {
+  collapsedNavGroups.value = {
+    ...collapsedNavGroups.value,
+    [id]: !collapsedNavGroups.value[id],
+  }
+}
+
+function isNavGroupCollapsed(id: string): boolean {
+  return !!collapsedNavGroups.value[id]
+}
+
+async function loadDashboardSummary(): Promise<void> {
+  dashboardLoading.value = true
+  try {
+    dashboardSummary.value = await window.hermes?.dashboard?.summary() ?? null
+  } finally {
+    dashboardLoading.value = false
+  }
+}
+
 // --- Chat ---
 
 function scrollToBottom(): void {
@@ -179,11 +290,12 @@ function onScroll(): void {
 onMounted(() => {
   scrollToBottom()
   unsubSetTab = window.hermes?.chat?.onSetTab((tab: string) => {
-    activeTab.value = tab as Tab
-    if (tab === 'chat') scrollToBottom()
+    switchTab(tab as Tab)
   })
   checkConnection()
   loadConversations()
+  if (!['chat', 'settings', 'interaction'].includes(activeTab.value)) loadDashboardSummary()
+  if (activeTab.value === 'settings') initHermesCliPanel()
 })
 
 onBeforeUnmount(() => {
@@ -195,7 +307,8 @@ function switchTab(tab: Tab): void {
   activeTab.value = tab
   historyOpen.value = false
   if (tab === 'chat') scrollToBottom()
-  if (tab === 'settings') initHermesCliPanel()
+  if (tab === 'settings' || tab === 'gateways') initHermesCliPanel()
+  if (!['chat', 'settings', 'interaction'].includes(tab)) loadDashboardSummary()
 }
 
 // Close history dropdown when clicking outside
@@ -442,29 +555,57 @@ async function initHermesCliPanel(): Promise<void> {
       </div>
 
       <!-- Nav -->
-      <nav class="flex flex-grow flex-col gap-1 px-2">
-        <button
-          v-for="item in ([{ id: 'chat', icon: 'chat_bubble', label: '当前会话' }, { id: 'interaction', icon: 'touch_app', label: '交互模式' }, { id: 'settings', icon: 'settings', label: '系统设置' }] as const)"
-          :key="item.id"
-          :class="[
-            'flex cursor-pointer items-center gap-3 px-4 py-3 transition-all',
-            activeTab === item.id
-              ? 'active-tab-glow border-l-4 border-primary bg-secondary-container/50 text-primary'
-              : 'text-on-surface-variant hover:bg-surface-variant/40 hover:text-on-surface',
-          ]"
-          @click="switchTab(item.id)"
-        >
-          <span class="material-symbols-outlined" :style="activeTab === item.id ? 'font-variation-settings: FILL 1' : ''">
-            {{ item.icon }}
-          </span>
-          <span class="font-body-sm text-body-sm">
-            {{ item.label }}
-          </span>
-        </button>
+      <nav class="custom-scrollbar flex flex-grow flex-col gap-2 overflow-y-auto px-2">
+        <section v-for="group in navGroups" :key="group.id" class="flex flex-col gap-1">
+          <button
+            class="flex cursor-pointer items-center justify-between rounded-lg px-4 py-2 font-label-caps text-label-caps text-on-surface-variant/75 transition-all hover:bg-surface-variant/30 hover:text-on-surface"
+            @click="toggleNavGroup(group.id)"
+          >
+            <span>{{ group.label }}</span>
+            <span
+              :class="[
+                'material-symbols-outlined text-[16px] transition-transform',
+                isNavGroupCollapsed(group.id) ? '-rotate-90' : '',
+              ]"
+            >expand_more</span>
+          </button>
+          <div v-show="!isNavGroupCollapsed(group.id)" class="flex flex-col gap-1">
+            <button
+              v-for="item in group.items"
+              :key="item.id"
+              :class="[
+                'flex cursor-pointer items-center gap-3 px-4 py-3 transition-all',
+                activeTab === item.id
+                  ? 'active-tab-glow border-l-4 border-primary bg-secondary-container/50 text-primary'
+                  : 'text-on-surface-variant hover:bg-surface-variant/40 hover:text-on-surface',
+              ]"
+              @click="switchTab(item.id)"
+            >
+              <span class="material-symbols-outlined" :style="activeTab === item.id ? 'font-variation-settings: FILL 1' : ''">
+                {{ item.icon }}
+              </span>
+              <span class="font-body-sm text-body-sm">
+                {{ item.label }}<span v-if="item.beta" class="ml-1 text-[10px] text-on-surface-variant">(beta)</span>
+              </span>
+            </button>
+          </div>
+        </section>
       </nav>
 
       <!-- Footer -->
       <div class="mt-auto border-t border-outline-variant/10 px-4 pt-4">
+        <div class="mb-3 space-y-2 rounded-xl bg-surface-container-low/45 p-3">
+          <div class="flex items-center justify-between gap-2">
+            <span class="font-label-caps text-label-caps text-on-surface-variant">Profile</span>
+            <span class="truncate font-mono-status text-mono-status text-on-surface">{{ dashboardSummary?.activeProfile || hermesProfile }}</span>
+          </div>
+          <div class="flex items-center justify-between gap-2">
+            <span class="font-label-caps text-label-caps text-on-surface-variant">Bridge</span>
+            <span :class="['font-mono-status text-mono-status', connectionStatus === 'connected' ? 'text-primary' : 'text-error']">
+              {{ connectionStatus === 'connected' ? 'online' : 'offline' }}
+            </span>
+          </div>
+        </div>
         <button
           class="flex w-full cursor-pointer items-center gap-3 px-4 py-3 text-on-surface-variant transition-all hover:bg-surface-variant/40 hover:text-on-surface"
           @click="close"
@@ -480,13 +621,29 @@ async function initHermesCliPanel(): Promise<void> {
       <!-- ===== Chat Tab ===== -->
       <template v-if="activeTab === 'chat'">
         <div class="flex flex-1 overflow-hidden">
-          <aside class="flex w-80 flex-col border-r border-outline-variant/15 bg-surface/40 backdrop-blur-2xl">
+          <aside
+            :class="[
+              'flex flex-col border-r border-outline-variant/15 bg-surface/40 backdrop-blur-2xl transition-all duration-200',
+              conversationListCollapsed ? 'w-14' : 'w-80',
+            ]"
+          >
             <div class="flex items-center justify-between px-5 pt-5 pb-4">
-              <div class="flex items-center gap-2">
+              <div v-if="!conversationListCollapsed" class="flex items-center gap-2">
                 <span class="material-symbols-outlined text-[18px] text-primary">forum</span>
                 <span class="font-body-sm font-semibold text-on-surface">对话</span>
               </div>
               <button
+                class="flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg text-on-surface-variant transition-all hover:bg-surface-variant/40 hover:text-on-surface"
+                :aria-label="conversationListCollapsed ? '展开会话列表' : '收起会话列表'"
+                :title="conversationListCollapsed ? '展开会话列表' : '收起会话列表'"
+                @click="conversationListCollapsed = !conversationListCollapsed"
+              >
+                <span class="material-symbols-outlined text-[18px]">
+                  {{ conversationListCollapsed ? 'chevron_right' : 'chevron_left' }}
+                </span>
+              </button>
+              <button
+                v-if="!conversationListCollapsed"
                 class="flex cursor-pointer items-center gap-1 rounded-lg px-3 py-1.5 text-on-surface-variant transition-all hover:bg-surface-variant/40 hover:text-on-surface"
                 @click="newConversation"
               >
@@ -494,14 +651,23 @@ async function initHermesCliPanel(): Promise<void> {
                 <span class="font-body-sm">新建</span>
               </button>
             </div>
-            <div class="px-5 pb-4">
+            <div v-if="conversationListCollapsed" class="flex flex-col items-center gap-3 px-2 pb-4">
+              <button
+                class="flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg text-on-surface-variant transition-all hover:bg-surface-variant/40 hover:text-on-surface"
+                title="新建对话"
+                @click="newConversation"
+              >
+                <span class="material-symbols-outlined text-[18px]">add</span>
+              </button>
+            </div>
+            <div v-if="!conversationListCollapsed" class="px-5 pb-4">
               <input
                 v-model="conversationQuery"
                 class="glass-border w-full rounded-xl bg-surface-container-highest/60 px-4 py-3 font-body-sm text-on-surface outline-none focus:ring-1 focus:ring-primary/50"
                 placeholder="搜索对话..."
               />
             </div>
-            <div class="custom-scrollbar flex-1 overflow-y-auto px-2 pb-6">
+            <div v-if="!conversationListCollapsed" class="custom-scrollbar flex-1 overflow-y-auto px-2 pb-6">
               <template v-if="conversations.length === 0">
                 <p class="px-4 py-6 text-center font-body-sm text-on-surface-variant">暂无对话记录</p>
               </template>
@@ -899,6 +1065,125 @@ async function initHermesCliPanel(): Promise<void> {
       <!-- ===== Interaction Tab ===== -->
       <template v-else-if="activeTab === 'interaction'">
         <InteractionPanel />
+      </template>
+
+      <!-- ===== Hermes Web UI Parity Modules ===== -->
+      <template v-else>
+        <header class="sticky top-0 z-10 flex h-16 items-center justify-between border-b border-outline-variant/10 bg-surface/70 px-8 backdrop-blur-xl">
+          <div class="flex items-center gap-3">
+            <span class="material-symbols-outlined text-2xl text-primary">{{ moduleMeta.icon }}</span>
+            <div>
+              <h2 class="font-headline-lg text-headline-lg text-primary">{{ moduleMeta.label }}</h2>
+              <p class="font-body-sm text-on-surface-variant opacity-80">
+                {{ activeModuleInfo?.detail || '按 hermes-web-ui 模块边界预留，后端能力逐步接入。' }}
+              </p>
+            </div>
+          </div>
+          <button
+            class="glass-border flex cursor-pointer items-center gap-2 rounded-xl px-4 py-2 font-body-sm text-on-surface-variant transition-all hover:bg-surface-variant/40 hover:text-on-surface"
+            :disabled="dashboardLoading"
+            @click="loadDashboardSummary"
+          >
+            <span class="material-symbols-outlined text-[18px]">refresh</span>
+            刷新
+          </button>
+        </header>
+
+        <div class="custom-scrollbar flex-1 overflow-y-auto px-8 pb-24 pt-6">
+          <div class="grid grid-cols-3 gap-4">
+            <section class="glass-panel rounded-xl p-5">
+              <p class="font-label-caps text-label-caps text-on-surface-variant">Profile</p>
+              <p class="mt-2 truncate font-headline-md text-headline-md text-on-surface">
+                {{ dashboardSummary?.activeProfile || hermesProfile }}
+              </p>
+            </section>
+            <section class="glass-panel rounded-xl p-5">
+              <p class="font-label-caps text-label-caps text-on-surface-variant">Gateway</p>
+              <p :class="['mt-2 font-headline-md text-headline-md', dashboardSummary?.gateway?.running ? 'text-primary' : 'text-error']">
+                {{ dashboardSummary?.gateway?.running ? '运行中' : '未运行' }}
+              </p>
+            </section>
+            <section class="glass-panel rounded-xl p-5">
+              <p class="font-label-caps text-label-caps text-on-surface-variant">CLI</p>
+              <p :class="['mt-2 font-headline-md text-headline-md', dashboardSummary?.cliAvailable ? 'text-primary' : 'text-error']">
+                {{ dashboardSummary?.cliAvailable ? '可用' : '未检测到' }}
+              </p>
+            </section>
+          </div>
+
+          <section v-if="activeTab === 'gateways'" class="glass-panel mt-6 rounded-xl p-6">
+            <div class="flex items-center justify-between border-b border-outline-variant/20 pb-4">
+              <div>
+                <h3 class="font-headline-md text-headline-md text-on-surface">Gateway 托管</h3>
+                <p class="font-body-sm text-on-surface-variant">复用 main 侧 Hermes CLI service，等价于 hermes-web-ui 的 gateway controller/service 边界。</p>
+              </div>
+              <span :class="['rounded-full px-3 py-1 font-mono-status text-mono-status', gatewayStatus?.running ? 'bg-primary/10 text-primary' : 'bg-error/10 text-error']">
+                {{ gatewayStatus?.running ? 'running' : 'stopped' }}
+              </span>
+            </div>
+            <div class="mt-5 grid grid-cols-2 gap-6">
+              <div class="flex flex-col gap-2">
+                <label class="font-label-caps text-label-caps text-on-surface-variant">Profile</label>
+                <select
+                  v-model="hermesProfile"
+                  :disabled="hermesCliAvailable !== 'available' || gatewayBusy"
+                  class="glass-border appearance-none rounded-lg bg-surface-container-highest px-4 py-3 font-body-sm text-on-surface outline-none focus:ring-1 focus:ring-primary/50 disabled:opacity-60"
+                  @change="refreshGatewayStatus"
+                >
+                  <option v-for="p in hermesProfiles" :key="p" :value="p">{{ p }}</option>
+                </select>
+              </div>
+              <div class="flex items-end gap-3">
+                <button class="rounded-xl bg-primary px-6 py-3 font-body-sm font-semibold text-on-primary shadow-xl shadow-primary/30 disabled:opacity-60" :disabled="hermesCliAvailable !== 'available' || gatewayBusy" @click="startGateway">启动</button>
+                <button class="rounded-xl border border-outline-variant/40 px-6 py-3 font-body-sm font-semibold text-on-surface-variant hover:bg-surface-variant/40 disabled:opacity-60" :disabled="hermesCliAvailable !== 'available' || gatewayBusy" @click="stopGateway">停止</button>
+                <button class="rounded-xl border border-outline-variant/40 px-6 py-3 font-body-sm font-semibold text-on-surface-variant hover:bg-surface-variant/40 disabled:opacity-60" :disabled="hermesCliAvailable !== 'available' || gatewayBusy" @click="restartGateway">重启</button>
+              </div>
+            </div>
+            <p v-if="gatewayMessage" class="mt-4 rounded-lg bg-surface-container-high/60 px-4 py-3 font-body-sm text-on-surface-variant">{{ gatewayMessage }}</p>
+          </section>
+
+          <section v-else-if="activeTab === 'models'" class="glass-panel mt-6 rounded-xl p-6">
+            <h3 class="font-headline-md text-headline-md text-on-surface">模型分组</h3>
+            <div class="mt-5 grid gap-3">
+              <div v-for="group in dashboardSummary?.models || []" :key="group.provider" class="glass-border rounded-xl bg-surface-container-low/40 p-4">
+                <div class="flex items-center justify-between">
+                  <span class="font-body-sm font-semibold text-on-surface">{{ group.label }}</span>
+                  <span class="font-mono-status text-mono-status text-on-surface-variant">{{ group.models.length }} models</span>
+                </div>
+                <p class="mt-2 break-words font-mono-status text-mono-status text-on-surface-variant">
+                  {{ group.models.slice(0, 8).join(', ') || '当前 profile 未暴露模型列表' }}
+                </p>
+              </div>
+            </div>
+          </section>
+
+          <section v-else-if="activeTab === 'logs'" class="glass-panel mt-6 rounded-xl p-6">
+            <h3 class="font-headline-md text-headline-md text-on-surface">日志文件</h3>
+            <div class="mt-5 grid gap-3">
+              <div v-for="log in dashboardSummary?.logs || []" :key="log.path" class="glass-border grid grid-cols-[1fr_auto_auto] gap-4 rounded-xl bg-surface-container-low/40 p-4">
+                <span class="truncate font-body-sm text-on-surface">{{ log.name }}</span>
+                <span class="font-mono-status text-mono-status text-on-surface-variant">{{ log.size }}</span>
+                <span class="font-mono-status text-mono-status text-on-surface-variant">{{ log.modified }}</span>
+              </div>
+              <p v-if="!dashboardSummary?.logs?.length" class="font-body-sm text-on-surface-variant">未找到 Hermes 日志文件。</p>
+            </div>
+          </section>
+
+          <section v-else class="glass-panel mt-6 rounded-xl p-6">
+            <div class="flex items-start gap-4">
+              <span class="material-symbols-outlined text-3xl text-primary/80">{{ moduleMeta.icon }}</span>
+              <div>
+                <h3 class="font-headline-md text-headline-md text-on-surface">{{ moduleMeta.label }}</h3>
+                <p class="mt-2 font-body-sm text-on-surface-variant">
+                  {{ activeModuleInfo?.detail || '该模块已在导航中补齐，后端会按 hermes-web-ui 对应 controller/service 分批接入。' }}
+                </p>
+                <p class="mt-4 font-mono-status text-mono-status text-on-surface-variant">
+                  状态：{{ activeModuleInfo?.status || 'planned' }}
+                </p>
+              </div>
+            </div>
+          </section>
+        </div>
       </template>
     </main>
   </div>

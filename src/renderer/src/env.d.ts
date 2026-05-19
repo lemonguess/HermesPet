@@ -1,4 +1,16 @@
-import type { AgentRunEvent, AgentRunStarted, AgentSendRequest, HermesCliResult, HermesGatewayStatus, MediaImportRequest, MediaImportResult, MessagePart } from '@shared/types'
+import type {
+  AgentRunEvent,
+  AgentRunStarted,
+  AgentSendRequest,
+  HermesCliResult,
+  HermesDashboardSummary,
+  HermesGatewayStatus,
+  HermesLogFile,
+  HermesModelGroup,
+  MediaImportRequest,
+  MediaImportResult,
+  MessagePart,
+} from '@shared/types'
 
 declare global {
   interface Conversation {
@@ -42,6 +54,11 @@ declare global {
         gatewayStart: (profile: string) => Promise<HermesCliResult>
         gatewayStop: (profile: string) => Promise<HermesCliResult>
         gatewayRestart: (profile: string) => Promise<HermesCliResult>
+      }
+      dashboard: {
+        summary: () => Promise<HermesDashboardSummary>
+        models: () => Promise<HermesModelGroup[]>
+        logs: () => Promise<HermesLogFile[]>
       }
       media: {
         filePath: (file: File) => string

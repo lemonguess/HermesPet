@@ -10,6 +10,7 @@
 
 <!-- 新条目追加在本注释下方 -->
 
+- [iteration-012 — hermes-web-ui-parity-and-live2d-fixes](iteration-012-hermes-web-ui-parity-and-live2d-fixes.md) — 平滑 Live2D 视线回正 / 暗黑服装 preset / hermes-web-ui 分组导航 + dashboard IPC；tests + typecheck + build + Browser smoke 通过
 - [iteration-011 — web-ui-parity-media-and-layout](iteration-011-web-ui-parity-media-and-layout.md) — 对齐 hermes-web-ui：会话左栏常驻 + 图片附件（导入到 ~/HermesPet_Media/）；typecheck + build 通过
 - [iteration-010 — hermes-cli-hosting](iteration-010-hermes-cli-hosting.md) — 增加 Hermes CLI 托管面板（profile/gateway 管理），不改现有聊天链路；typecheck + build 通过
 - [iteration-009 — hermes-agent-bridge](iteration-009-hermes-agent-bridge.md) — renderer localhost API 改为 Electron main Hermes Agent Bridge；HRP 增量解析 + 可见文本过滤 + AST 持久化；typecheck + build + dev smoke 通过
